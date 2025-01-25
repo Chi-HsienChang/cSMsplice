@@ -7,6 +7,7 @@ from Bio.SeqRecord import SeqRecord
 import scipy.ndimage
 import scipy.stats as stats
 from SMsplice import *
+import random
 from tqdm import tqdm
 from ipdb import set_trace
 
@@ -111,9 +112,8 @@ trainGenes = np.setdiff1d(trainGenes, generalizationGenes)
 trainGenes = np.setdiff1d(trainGenes, validationGenes)
 
 print("測試時隨機挑選一部分基因進行分析，而非全部基因")
-
-trainGenes = np.random.choice(trainGenes, 50, replace=False)  # 測試時僅挑選 50 條基因
-testGenes = np.random.choice(testGenes, 10, replace=False)  # 測試時僅挑選 10 條基因
+trainGenes = np.random.choice(trainGenes, 10, replace=False)  # 測試時僅挑選 50 條基因
+testGenes = np.random.choice(testGenes, 3, replace=False)  # 測試時僅挑選 10 條基因
 
 if len(trainGenes) > train_size: trainGenes = np.random.choice(trainGenes, train_size, replace = False)
 
@@ -395,8 +395,13 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
    
 # Learning  
 if args.learn_sres:
+    print('Learning SREs')
+    print("len(trainGenes):", len(trainGenes))
+
     lengthsOfGenes = np.array([len(str(genes[gene].seq)) for gene in trainGenes])
     trainGenesShort = trainGenes[lengthsOfGenes < 200000]
+    print("len(trainGenesShort):", len(trainGenesShort))
+
     np.random.shuffle(trainGenesShort)
     trainGenesShort = np.array_split(trainGenesShort, 4)
     
@@ -421,6 +426,12 @@ if args.learn_sres:
         else: 
             trainGenesSub = np.copy(trainGenesTest)
             update_scores = False
+
+        # 檢查 trainGenesSub 是否為空
+        if len(trainGenesSub) == 0:
+            print(f"trainGenesSub is empty at learning_counter {learning_counter}. Randomly selecting a gene.")
+            # 從所有 trainGenes 中隨機選一個
+            trainGenesSub = [random.choice(trainGenes)]        
         
         lengths = np.array([len(str(genes[gene].seq)) for gene in trainGenesSub])
         sequences = [str(genes[gene].seq) for gene in trainGenesSub]
@@ -562,6 +573,11 @@ for g, gene in tqdm(enumerate(testGenes), desc = 'Calculating Sensitivity and Pr
     trueFives = np.nonzero(trueSeqs[gene] == B5)[0]
     
     if args.print_predictions: 
+        print("\n########################################################################################")
+        print("########################################################################################")
+        print("########################################################################################")
+        print("########################################################################################")
+        print("########################################################################################")
         print(gene)
         print("\tAnnotated Fives:", trueFives, "Predicted Fives:", predFives)
         print("\tAnnotated Threes:", trueThrees, "Predicted Threes:", predThrees)
