@@ -10,10 +10,8 @@ from SMsplice import *
 import random
 from tqdm import tqdm
 from ipdb import set_trace
-import random
 
-random.seed(6)
-np.random.seed(6)
+startTime = time.time()
 
 def parse_arguments():
     #argument parsing 
@@ -25,11 +23,11 @@ def parse_arguments():
     
     parser.add_argument("--prelearned_sres", choices = ['none', 'human', 'mouse', 'zebrafish', 'fly', 'moth', 'arabidopsis'], default = 'none')
     parser.add_argument("--learn_sres", action="store_true")
-
     # parser.add_argument("--max_learned_scores", type=int, default = 1000)
-    parser.add_argument("--max_learned_scores", type=int, default = 3)
+    parser.add_argument("--max_learned_scores", type=int, default = 10)
     
     parser.add_argument("--learning_seed", choices = ['none', 'real-decoy'], default = 'none')
+    parser.add_argument("--max_learned_weights", type=int, default = 15)
     
     parser.add_argument("--print_predictions", action="store_true")
     parser.add_argument("--print_local_scores", action="store_true")
@@ -114,9 +112,8 @@ trainGenes = np.setdiff1d(trainGenes, generalizationGenes)
 trainGenes = np.setdiff1d(trainGenes, validationGenes)
 
 print("測試時隨機挑選一部分基因進行分析，而非全部基因")
-trainGenes = np.random.choice(trainGenes, 2, replace=False)  # 測試時僅挑選 50 條基因
-validationGenes = np.random.choice(validationGenes, 1, replace=False)  # 測試時僅挑選 50 條基因
-testGenes = np.random.choice(testGenes, 1, replace=False)  # 測試時僅挑選 10 條基因
+trainGenes = np.random.choice(trainGenes, 10, replace=False)  # 測試時僅挑選 50 條基因
+testGenes = np.random.choice(testGenes, 3, replace=False)  # 測試時僅挑選 10 條基因
 
 if len(trainGenes) > train_size: trainGenes = np.random.choice(trainGenes, train_size, replace = False)
 
@@ -166,7 +163,7 @@ numExonsDF['Empirical'] = numExonsDF['Count']/numExonsDF['Count'].sum()
 transitions = [1 - p1E, 1 - pEO]
 
 # N = 5000000 
-N = 30000
+N = 10000
 lengthIntronsHist = np.histogram(lengthIntrons, bins = N, range = (0,N))[0] # nth bin is [n-1,n) bun Nth bin is [N-1,N]
 lengthIntronsDF = pd.DataFrame(list(zip(np.arange(0, N), lengthIntronsHist)), columns = ['Index', 'Count'])
 lengthIntronsDF['Prob'] = lengthIntronsDF['Count']/lengthIntronsDF['Count'].sum()
@@ -219,7 +216,6 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
     five_scores_tracker = np.flip(np.sort(list(five_scores)))
 
     for score in tqdm(five_scores_tracker, desc = 'score for 5\'SS'):
-        # print("len(trainGenes): ", len(trainGenes))
         np.random.shuffle(trainGenes)
         g = 0
         while g < len(trainGenes):
@@ -293,37 +289,26 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
     
     # Learn weight
     lengths = np.array([len(str(genes[gene].seq)) for gene in validationGenes])
-    sequences = [str(genes[gene].seq) for gene in validationGenes]   
-
-    # print("len(validationGenes): ", len(validationGenes))
-    # set_trace()
+    sequences = [str(genes[gene].seq) for gene in validationGenes]    
     
     # step_size = 1
-    step_size = 0.1
+    step_size = 0.5
     sre_weights = [0, step_size]
     scores = []
     for sre_weight in tqdm(sre_weights, desc = 'Learning Weight'):
-        # print("sre_weight:", sre_weight)
-        # print("len(lengths):", len(lengths))
-        # print("max(lengths):", max(lengths))
-        # print("kmer:", kmer)
         exonicSREs5s = np.zeros((len(lengths), max(lengths)-kmer+1))
         exonicSREs3s = np.zeros((len(lengths), max(lengths)-kmer+1))
         intronicSREs5s = np.zeros((len(lengths), max(lengths)-kmer+1))
         intronicSREs3s = np.zeros((len(lengths), max(lengths)-kmer+1))
             
         for g, sequence in enumerate(sequences):
-            # print("g:", g)
             exonicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores5_exon)*sre_weight), kmer)))
             exonicSREs3s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores3_exon)*sre_weight), kmer)))
             intronicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores5_intron)*sre_weight), kmer)))
             intronicSREs3s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores3_intron)*sre_weight), kmer)))
-
-        print("viterbi-start")       
+                   
         pred_all = viterbi(sequences = sequences, transitions = transitions, pIL = pIL, pELS = pELS, pELF = pELF, pELM = pELM, pELL = pELL, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
-        print("viterbi-end") 
         
-    
         # Get the Sensitivity and Precision
         num_truePositives = 0
         num_falsePositives = 0
@@ -349,7 +334,7 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
     scores = np.array(scores)
     sre_weights = np.array(sre_weights)
     
-    while len(scores) < 1:
+    while len(scores) < 15:
         i = np.argmax(scores)
         if i == len(scores) - 1:
             sre_weights_test = [sre_weights[-1] + step_size]
@@ -411,11 +396,11 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
 # Learning  
 if args.learn_sres:
     print('Learning SREs')
-    # print("len(trainGenes):", len(trainGenes))
+    print("len(trainGenes):", len(trainGenes))
 
     lengthsOfGenes = np.array([len(str(genes[gene].seq)) for gene in trainGenes])
     trainGenesShort = trainGenes[lengthsOfGenes < 200000]
-    # print("len(trainGenesShort):", len(trainGenesShort))
+    print("len(trainGenesShort):", len(trainGenesShort))
 
     np.random.shuffle(trainGenesShort)
     trainGenesShort = np.array_split(trainGenesShort, 4)
@@ -509,26 +494,14 @@ if args.learn_sres:
             set1_counts_intron = set1_counts_intron + np.sum(set1_counts_intron) / psuedocount_denominator_intron
             set2_counts_intron = set2_counts_intron + np.sum(set2_counts_intron) / psuedocount_denominator_intron
     
-            # frequency_ratio_intron = set1_counts_intron/np.sum(set1_counts_intron) / (set2_counts_intron/np.sum(set2_counts_intron))
-            if np.sum(set1_counts_intron) > 0 and np.sum(set2_counts_intron) > 0:
-                frequency_ratio_intron = (set1_counts_intron / np.sum(set1_counts_intron)) / (set2_counts_intron / np.sum(set2_counts_intron))
-            else:
-                frequency_ratio_intron = np.zeros_like(set1_counts_intron)
-
-
-            
+            frequency_ratio_intron = set1_counts_intron/np.sum(set1_counts_intron) / (set2_counts_intron/np.sum(set2_counts_intron))
             sreScores_intron *= frequency_ratio_intron**score_learning_rate 
         
             psuedocount_denominator_exon = np.sum(set1_counts_exon) + np.sum(set2_counts_exon)
             set1_counts_exon = set1_counts_exon + np.sum(set1_counts_exon) / psuedocount_denominator_exon
             set2_counts_exon = set2_counts_exon + np.sum(set2_counts_exon) / psuedocount_denominator_exon
-
-            # frequency_ratio_exon = set1_counts_exon/np.sum(set1_counts_exon) / (set2_counts_exon/np.sum(set2_counts_exon))
-            if np.sum(set1_counts_exon) > 0 and np.sum(set2_counts_exon) > 0:
-                frequency_ratio_exon = (set1_counts_exon / np.sum(set1_counts_exon)) / (set2_counts_exon / np.sum(set2_counts_exon))
-            else:
-                frequency_ratio_exon = np.zeros_like(set1_counts_exon)
     
+            frequency_ratio_exon = set1_counts_exon/np.sum(set1_counts_exon) / (set2_counts_exon/np.sum(set2_counts_exon))
             sreScores_exon *= frequency_ratio_exon**score_learning_rate 
         
             sreScores3_intron = sreScores_intron
@@ -567,7 +540,7 @@ for gene in tqdm(testGenes, desc = 'Filtering Test Set'):
     else: notShortIntrons.append(True)
     
 notShortIntrons = np.array(notShortIntrons)
-# print('Number of Genes:', len(testGenes))
+print('Number of Genes:', len(testGenes))
 # set_trace()
 testGenes = testGenes[notShortIntrons]
 lengths = np.array([len(str(genes[gene].seq)) for gene in testGenes])
@@ -591,7 +564,7 @@ num_truePositives = 0
 num_falsePositives = 0
 num_falseNegatives = 0
 
-for g, gene in tqdm(enumerate(testGenes)):
+for g, gene in tqdm(enumerate(testGenes), desc = 'Calculating Sensitivity and Precision'):
     L = lengths[g]
     predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
     trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
@@ -603,6 +576,8 @@ for g, gene in tqdm(enumerate(testGenes)):
         print("\n########################################################################################")
         print("########################################################################################")
         print("########################################################################################")
+        print("########################################################################################")
+        print("########################################################################################")
         print(gene)
         print("\tAnnotated Fives:", trueFives, "Predicted Fives:", predFives)
         print("\tAnnotated Threes:", trueThrees, "Predicted Threes:", predThrees)
@@ -612,7 +587,6 @@ for g, gene in tqdm(enumerate(testGenes)):
     num_falseNegatives += len(np.setdiff1d(trueThrees, predThrees)) + len(np.setdiff1d(trueFives, predFives))
 
 if args.print_local_scores:
-    
     scored_sequences_5, scored_sequences_3  = score_sequences(sequences = sequences, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
   
     for g, gene in tqdm(enumerate(testGenes), desc = 'Printing Local Scores'):
@@ -620,7 +594,6 @@ if args.print_local_scores:
         predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
         predFives = np.nonzero(pred_all[0][g,:L] == 5)[0]
         
-        print()
         print(gene, "Internal Exons:")
         for i, three in enumerate(predThrees[:-1]):
             five = predFives[i+1]
