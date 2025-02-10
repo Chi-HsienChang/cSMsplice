@@ -8,6 +8,11 @@ time python3 runSMsplice.py -c ./canonical_datasets/canonical_dataset_TAIR10_lig
 -------------------
 -------------------
 -------------------
+echo "TAIR10.fa" >> .gitignore
+git remote set-url origin https://github.com/Chi-HsienChang/cSMsplice.git
+git remote add origin https://github.com/Chi-HsienChang/cSMsplice.git
+git pull origin main --rebase
+git push origin main
 -------------------
 -------------------
 -------------------
