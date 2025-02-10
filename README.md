@@ -7,6 +7,7 @@ time python3 runSMsplice.py -c ./canonical_datasets/canonical_dataset_TAIR10_lig
 
 -------------------
 -------------------
+-------------------
 ## original TAIR10.fa
 time python3 runSMsplice.py -c ./canonical_datasets/canonical_dataset_TAIR10.txt -a ./allSS_datasets/allSS_dataset_TAIR10.txt -g ./dataset/TAIR10.fa -m ./maxEnt_models/arabidopsis/ --prelearned_sres arabidopsis --print_predictions
 
