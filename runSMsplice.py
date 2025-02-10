@@ -11,6 +11,7 @@ import random
 from tqdm import tqdm
 from ipdb import set_trace
 import random
+import multiprocessing
 
 random.seed(6)
 np.random.seed(6)
@@ -47,32 +48,55 @@ canonical.index = canonical.index.map(str)
 allSS = pd.read_csv(args.all_ss, sep = '\t', engine='python', index_col=0, header = None) 
 allSS.index = allSS.index.map(str)
 
-genes = {}
-for gene in tqdm(canonical.index, desc = 'Loading Genes'):
-    txstart = canonical.loc[gene,4]-1
-    txend = canonical.loc[gene,5]
-    chrom = canonical.loc[gene,2][3:]
-    # print(canonical.head())
-    # print(canonical.columns)
 
-    if not np.array_equiv(['a', 'c', 'g', 't'],
-         np.unique(genome[chrom][canonical.loc[gene,4]-1:canonical.loc[gene,5]].seq.lower())): 
-#         print(gene, "nonstandard base")
-        continue
-    
+def load_single_gene(gene):
+    txstart = canonical.loc[gene, 4] - 1
+    txend   = canonical.loc[gene, 5]
+    chrom   = canonical.loc[gene, 2][3:]
+
+    # 檢查該區域是否只包含 a/c/g/t
+    uniq_bases = np.unique(genome[chrom][txstart:txend].seq.lower())
+    if not np.array_equiv(['a', 'c', 'g', 't'], uniq_bases):
+        # 如果遇到非標準鹼基，直接略過 (回傳 None)
+        return None
+
+    # 準備好其他欄位
     name = gene
     geneID = gene
-    description = gene + ' GeneID:'+gene + ' TranscriptID:Canonical' + ' Chromosome:' + canonical.loc[gene,2] + \
-    ' Start:'+str(txstart) + ' Stop:'+str(txend) + ' Strand:'+canonical.loc[gene,3]
+    description = (
+        f"{gene} GeneID:{gene} TranscriptID:Canonical "
+        f"Chromosome:{canonical.loc[gene,2]} Start:{txstart} Stop:{txend} "
+        f"Strand:{canonical.loc[gene,3]}"
+    )
 
-    if canonical.loc[gene,3] == '-':
-        seq = genome[chrom][canonical.loc[gene,4]-1:canonical.loc[gene,5]].seq.reverse_complement()
-    elif canonical.loc[gene,3] == '+': 
-        seq = genome[chrom][canonical.loc[gene,4]-1:canonical.loc[gene,5]].seq
+    if canonical.loc[gene, 3] == '-':
+        seq = genome[chrom][txstart:txend].seq.reverse_complement()
+    elif canonical.loc[gene, 3] == '+':
+        seq = genome[chrom][txstart:txend].seq
     else:
         print(gene, "strand error")
-    
-    genes[gene] = SeqRecord(seq, name = name, id = geneID, description = description)
+        return None
+
+    seq_rec = SeqRecord(seq, name=name, id=geneID, description=description)
+    return (gene, seq_rec)
+
+def load_all_genes_in_parallel(gene_list, n_processes):
+    genes_dict = {}
+
+    with multiprocessing.Pool(processes=n_processes) as pool:
+        # 為了使用 tqdm 觀察進度，可用 imap / imap_unordered
+        results_iter = pool.imap(load_single_gene, gene_list)
+        
+        for result in results_iter:
+            if result is None:
+                continue
+            gene_id, seq_record = result
+            genes_dict[gene_id] = seq_record
+
+    return genes_dict
+
+genes = {}
+genes = load_all_genes_in_parallel(canonical.index, n_processes=120)
 
 # Additional parameters
 sreEffect = 80
@@ -91,8 +115,14 @@ train_size = 4000
 test_size = 1000
 score_learning_rate = .01
 
+# print(canonical.columns)
+# print(canonical.head())
+
+
 # Get training, validation, generalization, and test sets
 # testGenes = canonical[(canonical[1] == 0)&canonical[2].isin(['chr2', 'chr4'])].index 
+
+
 testGenes = canonical[(canonical[1] == 0)&canonical[2].isin(['chr1'])].index 
 testGenes = np.intersect1d(testGenes, list(genes.keys()))
 
@@ -101,9 +131,10 @@ trainGenes = np.intersect1d(trainGenes, list(genes.keys()))
 trainGenes = np.setdiff1d(trainGenes, testGenes)
 
 lengthsOfGenes = np.array([len(str(genes[gene].seq)) for gene in trainGenes])
-trainGenes = trainGenes[lengthsOfGenes > sreEffect3_intron]
+trainGenes = trainGenes[lengthsOfGenes > sreEffect3_intron] #!!!!!!!!!!
 lengthsOfGenes = np.array([len(str(genes[gene].seq)) for gene in trainGenes])
-validationGenes = trainGenes[lengthsOfGenes < 200000]
+
+validationGenes = trainGenes[lengthsOfGenes < 200000] # For practical (speed) reasons, we excluded genes longer than 200 kb from the validation and weight learning sets above.
 
 generalizationGenes = np.intersect1d(validationGenes, canonical[canonical[1] == 0].index)
 if len(generalizationGenes) > test_size: generalizationGenes = np.random.choice(generalizationGenes, test_size, replace = False)
@@ -113,16 +144,20 @@ if len(validationGenes) > test_size: validationGenes = np.random.choice(validati
 trainGenes = np.setdiff1d(trainGenes, generalizationGenes)
 trainGenes = np.setdiff1d(trainGenes, validationGenes)
 
-print("測試時隨機挑選一部分基因進行分析，而非全部基因")
+
+
+# print("測試時隨機挑選一部分基因進行分析，而非全部基因")
 trainGenes = np.random.choice(trainGenes, 2, replace=False)  # 測試時僅挑選 50 條基因
 validationGenes = np.random.choice(validationGenes, 1, replace=False)  # 測試時僅挑選 50 條基因
-testGenes = np.random.choice(testGenes, 1, replace=False)  # 測試時僅挑選 10 條基因
+
 
 if len(trainGenes) > train_size: trainGenes = np.random.choice(trainGenes, train_size, replace = False)
 
+
+
 cannonical_annotations = {}
 annotations = {}
-for gene in tqdm(genes.keys(), desc = 'Getting True Sequences'):
+for gene in genes.keys():
     annnotation = []
     info = genes[gene].description.split(' ')
     
@@ -147,13 +182,24 @@ for gene in tqdm(genes.keys(), desc = 'Getting True Sequences'):
             
     cannonical_annotations[gene] = annnotation
     annotations[gene] = {'Canonical' : annnotation}
+
+# set_trace()
 trueSeqs = trueSequencesCannonical(genes, cannonical_annotations, E, I, B3, B5) 
+
+
+# set_trace()
 
 # Structural parameters
 numExonsPerGene, lengthSingleExons, lengthFirstExons, lengthMiddleExons, lengthLastExons, lengthIntrons \
     = structuralParameters(trainGenes, annotations)
-    
+
+
+# set_trace()
+
+
 N = int(np.ceil(max(numExonsPerGene)/10.0)*10)
+
+
 numExonsHist = np.histogram(numExonsPerGene, bins = N, range = (0,N))[0] #nth bin is [n-1,n) bun Nth bin is [N-1,N]
 numExonsDF = pd.DataFrame(list(zip(np.arange(0, N), numExonsHist)),columns = ['Index', 'Count'])
 
@@ -166,7 +212,7 @@ numExonsDF['Empirical'] = numExonsDF['Count']/numExonsDF['Count'].sum()
 transitions = [1 - p1E, 1 - pEO]
 
 # N = 5000000 
-N = 30000
+N = 5000
 lengthIntronsHist = np.histogram(lengthIntrons, bins = N, range = (0,N))[0] # nth bin is [n-1,n) bun Nth bin is [N-1,N]
 lengthIntronsDF = pd.DataFrame(list(zip(np.arange(0, N), lengthIntronsHist)), columns = ['Index', 'Count'])
 lengthIntronsDF['Prob'] = lengthIntronsDF['Count']/lengthIntronsDF['Count'].sum()
@@ -200,25 +246,27 @@ sreScores5_exon = np.copy(sreScores_exon)
 sreScores3_intron = np.copy(sreScores_intron)
 sreScores5_intron = np.copy(sreScores_intron)
 
+# set_trace()
+
 # Learning seed
 if args.learning_seed == 'real-decoy' and args.learn_sres:
     me5 = maxEnt5(trainGenes, genes, maxEntDir)
     me3 = maxEnt3(trainGenes, genes, maxEntDir)
-    
+    # set_trace()
     tolerance = .5
     decoySS = {}
-    for gene in tqdm(trainGenes, desc = 'Learning Seed'):
+    for gene in trainGenes:
         decoySS[gene] = np.zeros(len(genes[gene]), dtype = int)
         
     # 5'SS
     five_scores = []
-    for gene in tqdm(trainGenes, desc = 'gene for 5\'SS'):
+    for gene in trainGenes:
         for score in np.log2(me5[gene][trueSeqs[gene] == B5][1:]): five_scores.append(score)
     five_scores = np.array(five_scores)
 
     five_scores_tracker = np.flip(np.sort(list(five_scores)))
 
-    for score in tqdm(five_scores_tracker, desc = 'score for 5\'SS'):
+    for score in five_scores_tracker:
         # print("len(trainGenes): ", len(trainGenes))
         np.random.shuffle(trainGenes)
         g = 0
@@ -247,16 +295,19 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
             elif abs(score - gene5s[up_i]) < tolerance and decoySS[gene][sort_inds[up_i]] == 0:
                 decoySS[gene][sort_inds[up_i]] = B5
                 g = len(trainGenes)
+
+    
+    # set_trace()
                 
     # 3'SS 
     three_scores = []
-    for gene in tqdm(trainGenes, desc = 'gene for 3\'SS'):
+    for gene in trainGenes:
         for score in np.log2(me3[gene][trueSeqs[gene] == B3][:-1]): three_scores.append(score)
     three_scores = np.array(three_scores)
 
     three_scores_tracker = np.flip(np.sort(list(three_scores)))
 
-    for score in tqdm(three_scores_tracker, desc = 'score for 3\'SS'):
+    for score in three_scores_tracker:
         np.random.shuffle(trainGenes)
         g = 0
         while g < len(trainGenes):
@@ -284,6 +335,8 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
             elif abs(score - gene3s[up_i]) < tolerance and decoySS[gene][sort_inds[up_i]] == 0:
                 decoySS[gene][sort_inds[up_i]] = B3
                 g = len(trainGenes)
+    
+    # set_trace()
 
     (sreScores_intron, sreScores_exon, sreScores3_intron, sreScores3_exon, sreScores5_intron, sreScores5_exon) = get_hexamer_real_decoy_scores(trainGenes, trueSeqs, decoySS, genes, kmer = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron)
     sreScores3_intron = sreScores_intron
@@ -291,6 +344,8 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
     sreScores5_intron = np.copy(sreScores_intron)
     sreScores5_exon = np.copy(sreScores_exon)
     
+    # set_trace()
+
     # Learn weight
     lengths = np.array([len(str(genes[gene].seq)) for gene in validationGenes])
     sequences = [str(genes[gene].seq) for gene in validationGenes]   
@@ -302,7 +357,8 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
     step_size = 0.1
     sre_weights = [0, step_size]
     scores = []
-    for sre_weight in tqdm(sre_weights, desc = 'Learning Weight'):
+    
+    for sre_weight in sre_weights:
         # print("sre_weight:", sre_weight)
         # print("len(lengths):", len(lengths))
         # print("max(lengths):", max(lengths))
@@ -319,17 +375,15 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
             intronicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores5_intron)*sre_weight), kmer)))
             intronicSREs3s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores3_intron)*sre_weight), kmer)))
 
-        print("viterbi-start")       
+     
         pred_all = viterbi(sequences = sequences, transitions = transitions, pIL = pIL, pELS = pELS, pELF = pELF, pELM = pELM, pELL = pELL, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
-        print("viterbi-end") 
-        
-    
+
         # Get the Sensitivity and Precision
         num_truePositives = 0
         num_falsePositives = 0
         num_falseNegatives = 0
         
-        for g, gene in tqdm(enumerate(validationGenes), desc = 'Calculating Sensitivity and Precision'):
+        for g, gene in enumerate(validationGenes):
             L = lengths[g]
             predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
             trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
@@ -358,14 +412,14 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
         else:
             sre_weights_test = [sre_weights[i]/2 + sre_weights[i-1]/2, sre_weights[i]/2 + sre_weights[i+1]/2]
             
-        for sre_weight in tqdm(sre_weights_test, desc = 'Learning sre_weight'): 
+        for sre_weight in sre_weights_test: 
             sre_weights = np.append(sre_weights, sre_weight)
             exonicSREs5s = np.zeros((len(lengths), max(lengths)-kmer+1))
             exonicSREs3s = np.zeros((len(lengths), max(lengths)-kmer+1))
             intronicSREs5s = np.zeros((len(lengths), max(lengths)-kmer+1))
             intronicSREs3s = np.zeros((len(lengths), max(lengths)-kmer+1))
     
-            for g, sequence in tqdm(enumerate(sequences), desc = 'Calculating SREs'):
+            for g, sequence in enumerate(sequences):
                 exonicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores5_exon)*sre_weight), kmer)))
                 exonicSREs3s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores3_exon)*sre_weight), kmer)))
                 intronicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), np.exp(np.log(sreScores5_intron)*sre_weight), kmer)))
@@ -378,7 +432,7 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
             num_falsePositives = 0
             num_falseNegatives = 0
         
-            for g, gene in tqdm(enumerate(validationGenes), desc = 'Calculating Sensitivity and Precision'):
+            for g, gene in enumerate(validationGenes):
                 L = lengths[g]
                 predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
                 trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
@@ -410,7 +464,7 @@ if args.learning_seed == 'real-decoy' and args.learn_sres:
    
 # Learning  
 if args.learn_sres:
-    print('Learning SREs')
+    # print('Learning SREs')
     # print("len(trainGenes):", len(trainGenes))
 
     lengthsOfGenes = np.array([len(str(genes[gene].seq)) for gene in trainGenes])
@@ -444,7 +498,7 @@ if args.learn_sres:
 
         # 檢查 trainGenesSub 是否為空
         if len(trainGenesSub) == 0:
-            print(f"trainGenesSub is empty at learning_counter {learning_counter}. Randomly selecting a gene.")
+            # print(f"trainGenesSub is empty at learning_counter {learning_counter}. Randomly selecting a gene.")
             # 從所有 trainGenes 中隨機選一個
             trainGenesSub = [random.choice(trainGenes)]        
         
@@ -456,7 +510,7 @@ if args.learn_sres:
         intronicSREs5s = np.zeros((len(lengths), max(lengths)-kmer+1))
         intronicSREs3s = np.zeros((len(lengths), max(lengths)-kmer+1))
 
-        for g, sequence in tqdm(enumerate(sequences), desc = 'Calculating SREs'):
+        for g, sequence in enumerate(sequences):
             exonicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), sreScores5_exon, kmer)))
             exonicSREs3s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), sreScores3_exon, kmer)))
             intronicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), sreScores5_intron, kmer)))
@@ -472,7 +526,7 @@ if args.learn_sres:
         num_falsePositives = 0
         num_falseNegatives = 0
         
-        for g, gene in tqdm(enumerate(trainGenesSub), desc = 'Calculating Sensitivity and Precision'):
+        for g, gene in enumerate(trainGenesSub):
             L = lengths[g]
             falsePositives[gene] = np.zeros(len(genes[gene]), dtype = int)
             falseNegatives[gene] = np.zeros(len(genes[gene]), dtype = int)
@@ -550,12 +604,17 @@ if args.learn_sres:
     sreScores5_intron = np.copy(held_sreScores5_intron)
     sreScores3_intron = np.copy(held_sreScores3_intron)
 
+
+
+
+
 # Filter test set
 lengthsOfGenes = np.array([len(str(genes[gene].seq)) for gene in testGenes])
 testGenes = testGenes[lengthsOfGenes > sreEffect3_intron]
+testGenes = np.random.choice(testGenes, 2, replace=False)  
 
 notShortIntrons = []
-for gene in tqdm(testGenes, desc = 'Filtering Test Set'):
+for gene in testGenes:
     trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
     trueFives = np.nonzero(trueSeqs[gene] == B5)[0]
     
@@ -567,8 +626,7 @@ for gene in tqdm(testGenes, desc = 'Filtering Test Set'):
     else: notShortIntrons.append(True)
     
 notShortIntrons = np.array(notShortIntrons)
-# print('Number of Genes:', len(testGenes))
-# set_trace()
+
 testGenes = testGenes[notShortIntrons]
 lengths = np.array([len(str(genes[gene].seq)) for gene in testGenes])
 sequences = [str(genes[gene].seq) for gene in testGenes]
@@ -578,20 +636,19 @@ exonicSREs3s = np.zeros((len(lengths), max(lengths)-kmer+1))
 intronicSREs5s = np.zeros((len(lengths), max(lengths)-kmer+1))
 intronicSREs3s = np.zeros((len(lengths), max(lengths)-kmer+1))
 
-for g, sequence in tqdm(enumerate(sequences), desc = 'Calculating SREs'):
+for g, sequence in enumerate(sequences):
     exonicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), sreScores5_exon, kmer)))
     exonicSREs3s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), sreScores3_exon, kmer)))
     intronicSREs5s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), sreScores5_intron, kmer)))
     intronicSREs3s[g,:lengths[g]-kmer+1] = np.log(np.array(sreScores_single(sequence.lower(), sreScores3_intron, kmer)))
 
-pred_all = viterbi(sequences = sequences, transitions = transitions, pIL = pIL, pELS = pELS, pELF = pELF, pELM = pELM, pELL = pELL, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
 
+pred_all = viterbi(sequences = sequences, transitions = transitions, pIL = pIL, pELS = pELS, pELF = pELF, pELM = pELM, pELL = pELL, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
 # Get the Sensitivity and Precision
 num_truePositives = 0
 num_falsePositives = 0
 num_falseNegatives = 0
-
-for g, gene in tqdm(enumerate(testGenes)):
+for g, gene in enumerate(testGenes):
     L = lengths[g]
     predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
     trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
@@ -601,8 +658,8 @@ for g, gene in tqdm(enumerate(testGenes)):
     
     if args.print_predictions: 
         print("\n########################################################################################")
-        print("########################################################################################")
-        print("########################################################################################")
+        # print("########################################################################################")
+        # print("########################################################################################")
         print(gene)
         print("\tAnnotated Fives:", trueFives, "Predicted Fives:", predFives)
         print("\tAnnotated Threes:", trueThrees, "Predicted Threes:", predThrees)
@@ -611,11 +668,13 @@ for g, gene in tqdm(enumerate(testGenes)):
     num_falsePositives += len(np.setdiff1d(predThrees, trueThrees)) + len(np.setdiff1d(predFives, trueFives))
     num_falseNegatives += len(np.setdiff1d(trueThrees, predThrees)) + len(np.setdiff1d(trueFives, predFives))
 
+
+
 if args.print_local_scores:
     
     scored_sequences_5, scored_sequences_3  = score_sequences(sequences = sequences, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
   
-    for g, gene in tqdm(enumerate(testGenes), desc = 'Printing Local Scores'):
+    for g, gene in enumerate(testGenes):
         L = lengths[g]
         predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
         predFives = np.nonzero(pred_all[0][g,:L] == 5)[0]
@@ -637,5 +696,71 @@ ssPrec = num_truePositives / (num_truePositives + num_falsePositives)
 f1 = 2 / (1/ssSens + 1/ssPrec)
 print("Final Test Metrics", "Recall", ssSens, "Precision", ssPrec, "f1", f1) 
  
+# print("####### FB result #########")
+# print("####### FB result #########")
+# print("####### FB result #########")
+# # Salima
+# (
+#     alphaFive, alphaThree,
+#     betaFive,  betaThree,
+#     posteriorFive, posteriorThree,
+#     loglik
+# ) = forward_backward(
+#     sequences=sequences,
+#     transitions=transitions,
+#     pIL=pIL,
+#     pELS=pELS,
+#     pELF=pELF,
+#     pELM=pELM,
+#     pELL=pELL,
+#     exonicSREs5s=exonicSREs5s,
+#     exonicSREs3s=exonicSREs3s,
+#     intronicSREs5s=intronicSREs5s,
+#     intronicSREs3s=intronicSREs3s,
+#     k=kmer,
+#     sreEffect5_exon=sreEffect5_exon,
+#     sreEffect5_intron=sreEffect5_intron,
+#     sreEffect3_exon=sreEffect3_exon,
+#     sreEffect3_intron=sreEffect3_intron,
+#     meDir=maxEntDir
+# )
 
+# threshold = 0.5  # 你可以試 0.3 或其他值
 
+# FB_num_truePositives = 0
+# FB_num_falsePositives = 0
+# FB_num_falseNegatives = 0
+
+# for g, gene in enumerate(validationGenes):
+#     L = lengths[g]
+    
+#     # 從 posterior 拿 "predicted" 5' / 3'
+#     print("posteriorFive[g, :L] = ", posteriorFive[g, :L])
+#     print("posteriorThree[g, :L] = ", posteriorThree[g, :L])
+
+#     predFives  = np.nonzero(posteriorFive[g, :L]  >= threshold)[0]
+#     predThrees = np.nonzero(posteriorThree[g, :L] >= threshold)[0]
+
+#     # 取得 "true" 5' / 3'
+#     trueFives  = np.nonzero(trueSeqs[gene] == B5)[0]
+#     trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
+
+#     # 計算 TP / FP / FN
+#     FB_num_truePositives += (
+#         len(np.intersect1d(predFives,  trueFives)) +
+#         len(np.intersect1d(predThrees, trueThrees))
+#     )
+#     FB_num_falsePositives += (
+#         len(np.setdiff1d(predFives,  trueFives)) +
+#         len(np.setdiff1d(predThrees, trueThrees))
+#     )
+#     FB_num_falseNegatives += (
+#         len(np.setdiff1d(trueFives,  predFives)) +
+#         len(np.setdiff1d(trueThrees, predThrees))
+#     )
+
+# FB_ssSens = FB_num_truePositives / (FB_num_truePositives + FB_num_falseNegatives)
+# FB_ssPrec = FB_num_truePositives / (FB_num_truePositives + FB_num_falsePositives)
+# f1 = 2 / (1/FB_ssSens + 1/FB_ssPrec)
+# print("FB-based posterior, threshold =", threshold)
+# print("Sensitivity =", FB_ssSens, "Precision =", FB_ssPrec, "F1 =", f1)
