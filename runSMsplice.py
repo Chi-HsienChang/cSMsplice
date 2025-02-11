@@ -644,6 +644,8 @@ for g, sequence in enumerate(sequences):
 
 
 pred_all = viterbi(sequences = sequences, transitions = transitions, pIL = pIL, pELS = pELS, pELF = pELF, pELM = pELM, pELL = pELL, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
+
+# set_trace()
 # Get the Sensitivity and Precision
 num_truePositives = 0
 num_falsePositives = 0
@@ -652,6 +654,38 @@ for g, gene in enumerate(testGenes):
     L = lengths[g]
     predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
     trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
+
+    # set_trace()
+
+    predFives = np.nonzero(pred_all[0][g,:L] == 5)[0]
+    trueFives = np.nonzero(trueSeqs[gene] == B5)[0]
+    
+    if args.print_predictions: 
+        print("\n########################################################################################")
+        # print("########################################################################################")
+        # print("########################################################################################")
+        print(gene)
+        print("\tAnnotated Fives:", trueFives, "Predicted Fives:", predFives)
+        print("\tAnnotated Threes:", trueThrees, "Predicted Threes:", predThrees)
+        
+    num_truePositives += len(np.intersect1d(predThrees, trueThrees)) + len(np.intersect1d(predFives, trueFives))
+    num_falsePositives += len(np.setdiff1d(predThrees, trueThrees)) + len(np.setdiff1d(predFives, trueFives))
+    num_falseNegatives += len(np.setdiff1d(trueThrees, predThrees)) + len(np.setdiff1d(trueFives, predFives))
+
+
+pred_all = viterbi_second_best(sequences = sequences, transitions = transitions, pIL = pIL, pELS = pELS, pELF = pELF, pELM = pELM, pELL = pELL, exonicSREs5s = exonicSREs5s, exonicSREs3s = exonicSREs3s, intronicSREs5s = intronicSREs5s, intronicSREs3s = intronicSREs3s, k = kmer, sreEffect5_exon = sreEffect5_exon, sreEffect5_intron = sreEffect5_intron, sreEffect3_exon = sreEffect3_exon, sreEffect3_intron = sreEffect3_intron, meDir = maxEntDir)
+
+# set_trace()
+# Get the Sensitivity and Precision
+num_truePositives = 0
+num_falsePositives = 0
+num_falseNegatives = 0
+for g, gene in enumerate(testGenes):
+    L = lengths[g]
+    predThrees = np.nonzero(pred_all[0][g,:L] == 3)[0]
+    trueThrees = np.nonzero(trueSeqs[gene] == B3)[0]
+
+    # set_trace()
 
     predFives = np.nonzero(pred_all[0][g,:L] == 5)[0]
     trueFives = np.nonzero(trueSeqs[gene] == B5)[0]
